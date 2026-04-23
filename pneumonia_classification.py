@@ -51,7 +51,6 @@ with tf.device('/gpu:0'):
     class_names = train_ds.class_names
     print('Class Names: ',class_names)
 
-    
     #Q2: Class Weight Distributin
     def count_images(folder):
         counts = {}
@@ -76,6 +75,7 @@ with tf.device('/gpu:0'):
             plt.axis("off")
     plt.show()
 
+    #Q2 CLASS WEIGHTS after
     labels = []
 
     for _, y in train_ds.unbatch():
@@ -84,8 +84,14 @@ with tf.device('/gpu:0'):
     labels = np.array(labels)
     counts = np.bincount(labels)
     weights = np.max(counts)/counts
-    class_weight = {cls: weight for cls, weight in enumerate(weights)}
+    # Find which index is VIRAL
+    viral_idx = class_names.index('VIRAL')
 
+    # Boost VIRAL by a factor
+    boost_factor = 2.0
+    weights[viral_idx] *= boost_factor
+
+    class_weight = {cls: weight for cls, weight in enumerate(weights)}
     print("Counts:", counts)
     print("Class weights:", class_weight)
 
@@ -98,7 +104,7 @@ with tf.device('/gpu:0'):
             weights='imagenet')
         
         #Load pretrained model and freeze the weights so they are not modofies during the training
-        for layer in pretrained_model.layers[:-2]:
+        for layer in pretrained_model.layers[:-4]:
             layer.trainable=False
 
 
@@ -108,7 +114,7 @@ with tf.device('/gpu:0'):
             RandomFlip("horizontal"),
             RandomRotation(0.1),
             RandomZoom(0.1),
-            # RandomContrast(0.1),
+            RandomContrast(0.2),
 
             Rescaling(1.0/255),
 
@@ -128,7 +134,11 @@ with tf.device('/gpu:0'):
     
         # model.summary()
         return model 
-       
+    
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=3, restore_best_weights=True)
+    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
+    lr_callback = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=2, min_lr=1e-6) 
+    
     model = build_model()
     start_time = time.time()
         
@@ -136,12 +146,14 @@ with tf.device('/gpu:0'):
         train_ds,
         class_weight = class_weight,
         validation_data=val_ds,
-        epochs=epochs
+        epochs=epochs,
+        callbacks=[earlystop_callback, save_callback, lr_callback]
     )
         
     end_time = time.time()
     elapsed = end_time - start_time
     print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
+
 
     #if shuffle=True when creating the dataset, samples will be chosen randomly   
     score = model.evaluate(test_ds) #',batch_size=batch_size
@@ -152,8 +164,7 @@ with tf.device('/gpu:0'):
     #https://scikit-learn.org/stable/modules/generated/sklearn.metrics.classification_report.html
     y_true, y_pred =[], []
     for images, labels in test_ds:
-        # preds = model.predict(images)
-        preds = model.predict(test_ds)
+        preds = model.predict(images)
         y_pred.extend(np.argmax(preds, axis=1))  #converted probabities to class indices
         y_true.extend(labels.numpy())
 
