@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import os
-
+import keras_tuner as kt
 
 batch_size = 12
 num_classes = 3
@@ -49,7 +49,6 @@ with tf.device('/gpu:0'):
     class_names = train_ds.class_names
     print('Class Names: ',class_names)
 
-    
     #Q2: Class Weight Distributin
     def count_images(folder):
         counts = {}
@@ -88,55 +87,71 @@ with tf.device('/gpu:0'):
     print("Counts:", counts)
     print("Class weights:", class_weight)
 
-    #create model
-    model = tf.keras.models.Sequential([
-        #Q4 DATA AUGMENTATAION
-        RandomFlip("horizontal"),
-        RandomRotation(0.1),
-        RandomZoom(0.1),
-        # RandomContrast(0.1),
+    #Q5 create model FUNCTION USUSING KERAS TUNER
+    def build_model(hp):
 
-        Rescaling(1.0/255),
-        Conv2D(16, (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
-        MaxPooling2D(2,2),
-        Conv2D(32, (3,3), activation = 'relu'),
-        MaxPooling2D(2,2),
-        Conv2D(32, (3,3), activation = 'relu'),
-        MaxPooling2D(2,2),
-        #Q3: Fixing Overfitting 
-        GlobalAveragePooling2D(),
-        Dense(128, activation = 'relu'),
-        Dropout(0.4),
-        Dense(num_classes, activation = 'softmax')
-    ])
+        model = tf.keras.Sequential([
+            #Q4 DATA AUGMENTATAION
+            RandomFlip("horizontal"),
+            RandomRotation(0.1),
+            RandomZoom(0.1),
+            # RandomContrast(0.1),
 
-    model.compile(loss='sparse_categorical_crossentropy',
-                  optimizer=Adam(),
-                  metrics=['accuracy'])
+            Rescaling(1.0/255),
+            Conv2D(hp.Choice('Conv1', [16, 32, 64]),  (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
+            MaxPooling2D(2,2),
+            Conv2D(hp.Choice('Conv2', [32, 64, 128]),  (3,3), activation = 'relu'),
+            MaxPooling2D(2,2),
+            Conv2D(hp.Choice('Conv3', [64, 128, 256]),  (3,3), activation = 'relu'),
+            MaxPooling2D(2,2),
+            #Q3: Fixing Overfitting 
+            GlobalAveragePooling2D(),
+            Dense(hp.Choice('Dense', [128, 256, 512]), activation = 'relu'),
+            Dropout(hp.Float('Dropout', min_value=0.4, max_value = 0.6, step = 0.1)),         
+            Dense(num_classes, activation = 'softmax')
+        ])
+
+        model.compile(loss='sparse_categorical_crossentropy',
+                    optimizer=Adam(hp.Choice('learning_rate', [1e-3, 1e-4])),
+                    metrics=['accuracy'])
     
+        return model
+    
+    #Setting up Tuner  
+    #https://www.tensorflow.org/tutorials/keras/keras_tuner
+    tuner = kt.RandomSearch(
+        build_model,
+        objective='val_accuracy',
+        max_trials=5,
+        directory='tuning',
+        project_name='pneumonia'
+    )
+
     #earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
-    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
+    # save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
 
     if fit:
         start_time = time.time()
         
-        history = model.fit(
+        tuner.search(
             train_ds,
             class_weight = class_weight,
-            batch_size=batch_size,
             validation_data=val_ds,
-            callbacks=[save_callback],
             epochs=epochs
-            )
+        )
         
         end_time = time.time()
         elapsed = end_time - start_time
         print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
+
+        #Best Model
+        model = tuner.get_best_models(num_models=1)[0]
+        history = model.fit(train_ds, validation_data=val_ds, epochs=epochs)
     else:
-        model = tf.keras.models.load_model("pneumonia.keras")
+        model = tuner.get_best_models(num_models=1)[0]
 
     #if shuffle=True when creating the dataset, samples will be chosen randomly   
-    score = model.evaluate(test_ds, batch_size=batch_size)
+    score = model.evaluate(test_ds) #',batch_size=batch_size
     print('Test accuracy:', score[1])
 
     
