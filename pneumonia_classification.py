@@ -14,6 +14,7 @@ import numpy as np
 import time
 import os
 import keras_tuner as kt
+from sklearn.metrics import classification_report
 # from tensorflow.keras.applications import VGG16
 
 batch_size = 12
@@ -50,6 +51,7 @@ with tf.device('/gpu:0'):
     class_names = train_ds.class_names
     print('Class Names: ',class_names)
 
+    
     #Q2: Class Weight Distributin
     def count_images(folder):
         counts = {}
@@ -124,7 +126,7 @@ with tf.device('/gpu:0'):
                     optimizer=Adam(learning_rate=1e-4),
                     metrics=['accuracy'])
     
-
+        # model.summary()
         return model 
        
     model = build_model()
@@ -140,11 +142,24 @@ with tf.device('/gpu:0'):
     end_time = time.time()
     elapsed = end_time - start_time
     print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
- 
+
+    #if shuffle=True when creating the dataset, samples will be chosen randomly   
     score = model.evaluate(test_ds) #',batch_size=batch_size
     print('Test accuracy:', score[1])
 
-    
+      
+    #Q7) The per class precision, recall and F1 scores
+    #https://scikit-learn.org/stable/modules/generated/sklearn.metrics.classification_report.html
+    y_true, y_pred =[], []
+    for images, labels in test_ds:
+        # preds = model.predict(images)
+        preds = model.predict(test_ds)
+        y_pred.extend(np.argmax(preds, axis=1))  #converted probabities to class indices
+        y_true.extend(labels.numpy())
+
+    print(classification_report(y_true, y_pred, target_names=class_names))
+
+
     #if fit:
     plt.plot(history.history['accuracy'])
     plt.plot(history.history['val_accuracy'])
