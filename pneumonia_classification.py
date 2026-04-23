@@ -15,12 +15,12 @@ import time
 import os
 import keras_tuner as kt
 from sklearn.metrics import classification_report
-# from tensorflow.keras.applications import VGG16
+from tf_explain.core.grad_cam import GradCAM
 
 batch_size = 12
 num_classes = 3
 epochs = 8
-img_width = 128
+img_width = 128 
 img_height = 128
 img_channels = 3
 fit = True #make fit false if you do not want to train the network again
@@ -51,7 +51,9 @@ with tf.device('/gpu:0'):
     class_names = train_ds.class_names
     print('Class Names: ',class_names)
 
+    # ------------------------------------------------------------------------------
     #Q2: Class Weight Distributin
+    # ------------------------------------------------------------------------------
     def count_images(folder):
         counts = {}
         for cls in os.listdir(folder):
@@ -75,7 +77,9 @@ with tf.device('/gpu:0'):
             plt.axis("off")
     plt.show()
 
+    # ------------------------------------------------------------------------------
     #Q2 CLASS WEIGHTS after
+    # ------------------------------------------------------------------------------
     labels = []
 
     for _, y in train_ds.unbatch():
@@ -84,63 +88,74 @@ with tf.device('/gpu:0'):
     labels = np.array(labels)
     counts = np.bincount(labels)
     weights = np.max(counts)/counts
-    # Find which index is VIRAL
+    #Finding the VIRAL index
     viral_idx = class_names.index('VIRAL')
-
-    # Boost VIRAL by a factor
+    #Q8 )Incraese VIRAL by a factor for balance in classification
     boost_factor = 2.0
     weights[viral_idx] *= boost_factor
-
     class_weight = {cls: weight for cls, weight in enumerate(weights)}
+
     print("Counts:", counts)
     print("Class weights:", class_weight)
 
+    # ------------------------------------------------------------------------------ 
     #Q5 create model FUNCTION USUSING KERAS TUNER
+    # ------------------------------------------------------------------------------
+
     def build_model():
+
+
+        inputs = tf.keras.Input(shape=(img_height, img_width, img_channels))
+
+        # ------------------------------------------------------------------------------
+        #Q4 DATA AUGMENTATAION
+        # ------------------------------------------------------------------------------
+        x = RandomFlip("horizontal")(inputs)
+        x = RandomRotation(0.2)(x)
+        x = RandomZoom(0.2)(x)
+        x = RandomContrast(0.2)(x)
+
+        x = Rescaling(1.0/255)(x)
+
+        # ------------------------------------------------------------------------------
         #Q6) Transfer Learning Approach
-        pretrained_model = tf.keras.applications.VGG16(
+        # ------------------------------------------------------------------------------
+        base_model  = tf.keras.applications.VGG16(
             include_top = False,
-            input_shape=(img_height,img_width, img_channels),
-            weights='imagenet')
+            weights='imagenet',
+            input_tensor=x)
         
+        base_model.trainable = True
+
         #Load pretrained model and freeze the weights so they are not modofies during the training
-        for layer in pretrained_model.layers[:-4]:
+        for layer in base_model .layers[:-4]:
             layer.trainable=False
 
 
-        model = tf.keras.Sequential([
+         # ------------------------------------------------------------------------------
+        #Q3: Fixing Overfitting 
+        # ------------------------------------------------------------------------------
+        x = GlobalAveragePooling2D()(base_model.output)
+        x = Dense(256, activation='relu')(x)
+        x = Dropout(0.4)(x)
+        outputs = Dense(num_classes, activation='softmax')(x)
 
-            #Q4 DATA AUGMENTATAION
-            RandomFlip("horizontal"),
-            RandomRotation(0.1),
-            RandomZoom(0.1),
-            RandomContrast(0.2),
 
-            Rescaling(1.0/255),
-
-            #add the pretrainedmodel
-            pretrained_model,
-
-            #Q3: Fixing Overfitting 
-            GlobalAveragePooling2D(),
-            Dense(256, activation='relu'),
-            Dropout(0.4),         
-            Dense(num_classes, activation = 'softmax')
-        ])
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
 
         model.compile(loss='sparse_categorical_crossentropy',
-                    optimizer=Adam(learning_rate=1e-4),
+                    optimizer=Adam(learning_rate= 1e-4),
                     metrics=['accuracy'])
     
-        # model.summary()
-        return model 
-    
-    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=3, restore_best_weights=True)
+        return model
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
     save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
     lr_callback = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=2, min_lr=1e-6) 
-    
+
+
     model = build_model()
     start_time = time.time()
+        
         
     history = model.fit(
         train_ds,
@@ -156,11 +171,12 @@ with tf.device('/gpu:0'):
 
 
     #if shuffle=True when creating the dataset, samples will be chosen randomly   
-    score = model.evaluate(test_ds) #',batch_size=batch_size
+    score = model.evaluate(test_ds) #, batch_size=batch_size
     print('Test accuracy:', score[1])
 
-      
+    # ------------------------------------------------------------------------------
     #Q7) The per class precision, recall and F1 scores
+    # ------------------------------------------------------------------------------
     #https://scikit-learn.org/stable/modules/generated/sklearn.metrics.classification_report.html
     y_true, y_pred =[], []
     for images, labels in test_ds:
@@ -170,16 +186,52 @@ with tf.device('/gpu:0'):
 
     print(classification_report(y_true, y_pred, target_names=class_names))
 
+    # ------------------------------------------------------------------------------
+    # Q9) tf-explain (e.g.GradCam) to see what the CNN is seeing
+    # ------------------------------------------------------------------------------
+    # https://deepwiki.com/sicara/tf-explain/4.1.1-gradcam
+    print("\nRunning Grad-CAM")
 
-    #if fit:
+    explainer = GradCAM()
+
+    for images, labels in test_ds.take(1):
+
+        image = images[0].numpy()
+        label = labels[0].numpy()
+
+        prediction = model.predict(np.expand_dims(image, axis=0))
+        pred_class = np.argmax(prediction)
+
+        #LOOP THROUGH ALL CLASSES (THIS IS THE KEY CHANGE)
+        for i, class_name in enumerate(class_names):
+
+            data = (np.expand_dims(image, axis=0), None)
+
+            grid = explainer.explain(
+                data,
+                model,
+                class_index=i, 
+                layer_name="block5_conv3"
+            )
+
+            # CLEAN VISUALIZATION
+            plt.figure(figsize=(5,5))
+            plt.imshow(image.astype("uint8"))
+            plt.imshow(grid, cmap="jet", alpha=0.4)
+            plt.title(f"Grad-CAM for {class_name}")
+            plt.axis("off")
+            plt.show()
+
+        break
+
+
     plt.plot(history.history['accuracy'])
     plt.plot(history.history['val_accuracy'])
     plt.title('model accuracy')
     plt.ylabel('accuracy')
     plt.xlabel('epoch')
     plt.legend(['train', 'val'], loc='upper left')
-    plt.show()
-
+        
     test_batch = test_ds.take(1)
     plt.figure(figsize=(10, 10))
     for images, labels in test_batch:
