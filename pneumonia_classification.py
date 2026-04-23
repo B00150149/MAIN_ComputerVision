@@ -14,6 +14,7 @@ import numpy as np
 import time
 import os
 import keras_tuner as kt
+# from tensorflow.keras.applications import VGG16
 
 batch_size = 12
 num_classes = 3
@@ -73,7 +74,6 @@ with tf.device('/gpu:0'):
             plt.axis("off")
     plt.show()
 
-    #Q2 CLASS WEIGHTS after
     labels = []
 
     for _, y in train_ds.unbatch():
@@ -88,9 +88,20 @@ with tf.device('/gpu:0'):
     print("Class weights:", class_weight)
 
     #Q5 create model FUNCTION USUSING KERAS TUNER
-    def build_model(hp):
+    def build_model():
+        #Q6) Transfer Learning Approach
+        pretrained_model = tf.keras.applications.VGG16(
+            include_top = False,
+            input_shape=(img_height,img_width, img_channels),
+            weights='imagenet')
+        
+        #Load pretrained model and freeze the weights so they are not modofies during the training
+        for layer in pretrained_model.layers[:-2]:
+            layer.trainable=False
+
 
         model = tf.keras.Sequential([
+
             #Q4 DATA AUGMENTATAION
             RandomFlip("horizontal"),
             RandomRotation(0.1),
@@ -98,71 +109,51 @@ with tf.device('/gpu:0'):
             # RandomContrast(0.1),
 
             Rescaling(1.0/255),
-            Conv2D(hp.Choice('Conv1', [16, 32, 64]),  (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
-            MaxPooling2D(2,2),
-            Conv2D(hp.Choice('Conv2', [32, 64, 128]),  (3,3), activation = 'relu'),
-            MaxPooling2D(2,2),
-            Conv2D(hp.Choice('Conv3', [64, 128, 256]),  (3,3), activation = 'relu'),
-            MaxPooling2D(2,2),
+
+            #add the pretrainedmodel
+            pretrained_model,
+
             #Q3: Fixing Overfitting 
             GlobalAveragePooling2D(),
-            Dense(hp.Choice('Dense', [128, 256, 512]), activation = 'relu'),
-            Dropout(hp.Float('Dropout', min_value=0.4, max_value = 0.6, step = 0.1)),         
+            Dense(256, activation='relu'),
+            Dropout(0.4),         
             Dense(num_classes, activation = 'softmax')
         ])
 
         model.compile(loss='sparse_categorical_crossentropy',
-                    optimizer=Adam(hp.Choice('learning_rate', [1e-3, 1e-4])),
+                    optimizer=Adam(learning_rate=1e-4),
                     metrics=['accuracy'])
     
-        return model
-    
-    #Setting up Tuner  
-    #https://www.tensorflow.org/tutorials/keras/keras_tuner
-    tuner = kt.RandomSearch(
-        build_model,
-        objective='val_accuracy',
-        max_trials=5,
-        directory='tuning',
-        project_name='pneumonia'
+
+        return model 
+       
+    model = build_model()
+    start_time = time.time()
+        
+    history = model.fit(
+        train_ds,
+        class_weight = class_weight,
+        validation_data=val_ds,
+        epochs=epochs
     )
-
-    #earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
-    # save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
-
-    if fit:
-        start_time = time.time()
         
-        tuner.search(
-            train_ds,
-            class_weight = class_weight,
-            validation_data=val_ds,
-            epochs=epochs
-        )
-        
-        end_time = time.time()
-        elapsed = end_time - start_time
-        print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
-
-        #Best Model
-        model = tuner.get_best_models(num_models=1)[0]
-        history = model.fit(train_ds, validation_data=val_ds, epochs=epochs)
-    else:
-        model = tuner.get_best_models(num_models=1)[0]
-
-    #if shuffle=True when creating the dataset, samples will be chosen randomly   
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
+ 
     score = model.evaluate(test_ds) #',batch_size=batch_size
     print('Test accuracy:', score[1])
 
     
-    if fit:
-        plt.plot(history.history['accuracy'])
-        plt.plot(history.history['val_accuracy'])
-        plt.title('model accuracy')
-        plt.ylabel('accuracy')
-        plt.xlabel('epoch')
-        plt.legend(['train', 'val'], loc='upper left')
-        
+    #if fit:
+    plt.plot(history.history['accuracy'])
+    plt.plot(history.history['val_accuracy'])
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper left')
+    plt.show()
+
     test_batch = test_ds.take(1)
     plt.figure(figsize=(10, 10))
     for images, labels in test_batch:
