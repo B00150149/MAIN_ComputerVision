@@ -18,153 +18,167 @@ from sklearn.metrics import classification_report
 from tf_explain.core.grad_cam import GradCAM
 
 batch_size = 12
-num_classes = 3
-epochs = 8
-img_width = 128 
-img_height = 128
+epochs = 20
+img_height = 224
+img_width = 224
 img_channels = 3
-fit = True #make fit false if you do not want to train the network again
-train_dir = 'C:\\Users\\yashi\\Documents\\01_tud_yashika\\4th_year\Computer Vision\\chest_xray\\train'
-test_dir = 'C:\\Users\\yashi\\Documents\\01_tud_yashika\\4th_year\Computer Vision\\chest_xray\\test'
+
+train_dir = 'C:\\Users\\yashi\\Documents\\01_tud_yashika\\4th_year\\Computer Vision\\chest_xray\\train'
+test_dir = 'C:\\Users\\yashi\\Documents\\01_tud_yashika\\4th_year\\Computer Vision\\chest_xray\\test'
 
 with tf.device('/gpu:0'):
-    
+
+
     #create training,validation and test datatsets
-    train_ds,val_ds = tf.keras.preprocessing.image_dataset_from_directory(
+    train_ds, val_ds = tf.keras.preprocessing.image_dataset_from_directory(
         train_dir,
-        seed=123,
         validation_split=0.2,
         subset='both',
+        seed=123,
         image_size=(img_height, img_width),
         batch_size=batch_size,
-        labels='inferred',
-        shuffle=True)
-    
+        label_mode='categorical'
+    )
+
     test_ds = tf.keras.preprocessing.image_dataset_from_directory(
         test_dir,
-        seed=None,
         image_size=(img_height, img_width),
         batch_size=batch_size,
-        labels='inferred',
-        shuffle=True)
+        label_mode='categorical'
+    )
 
     class_names = train_ds.class_names
-    print('Class Names: ',class_names)
-
-    # ------------------------------------------------------------------------------
-    #Q2: Class Weight Distributin
-    # ------------------------------------------------------------------------------
-    def count_images(folder):
-        counts = {}
-        for cls in os.listdir(folder):
-            counts[cls] = len(os.listdir(os.path.join(folder, cls)))
-        return counts
-
-    train_counts = count_images(train_dir)
-    test_counts = count_images(test_dir)
-
-    print("Train distribution:", train_counts)
-    print("Test distribution:", test_counts)
-
     num_classes = len(class_names)
-    
-    plt.figure(figsize=(10, 10))
-    for images, labels in train_ds.take(2):
-        for i in range(6):
-            ax = plt.subplot(2, 3, i + 1)
-            plt.imshow(images[i].numpy().astype("uint8"))
-            plt.title(class_names[labels[i].numpy()])
-            plt.axis("off")
-    plt.show()
+    print('Class Names: ', class_names)
 
     # ------------------------------------------------------------------------------
     #Q2 CLASS WEIGHTS after
     # ------------------------------------------------------------------------------
     labels = []
-
     for _, y in train_ds.unbatch():
-        labels.append(y.numpy())
+        labels.append(np.argmax(y.numpy()))
 
     labels = np.array(labels)
     counts = np.bincount(labels)
-    weights = np.max(counts)/counts
-    #Finding the VIRAL index
-    viral_idx = class_names.index('VIRAL')
-    #Q8 )Incraese VIRAL by a factor for balance in classification
-    boost_factor = 2.0
-    weights[viral_idx] *= boost_factor
-    class_weight = {cls: weight for cls, weight in enumerate(weights)}
+    weights = np.max(counts) / counts
+    class_weight = {i: w for i, w in enumerate(weights)}
 
+    bacterial_idx = class_names.index('BACTERIAL')
+    viral_idx = class_names.index('VIRAL')
+
+    class_weight[bacterial_idx] *= 1.8  #1.5
+    class_weight[viral_idx] *= 1.5
     print("Counts:", counts)
     print("Class weights:", class_weight)
 
     # ------------------------------------------------------------------------------ 
     #Q5 create model FUNCTION USUSING KERAS TUNER
     # ------------------------------------------------------------------------------
-
     def build_model():
-
-
         inputs = tf.keras.Input(shape=(img_height, img_width, img_channels))
 
         # ------------------------------------------------------------------------------
         #Q4 DATA AUGMENTATAION
         # ------------------------------------------------------------------------------
-        x = RandomFlip("horizontal")(inputs)
-        x = RandomRotation(0.2)(x)
-        x = RandomZoom(0.2)(x)
-        x = RandomContrast(0.2)(x)
+        x = tf.keras.layers.RandomFlip("horizontal")(inputs)
+        x = tf.keras.layers.RandomRotation(0.1)(x)
+        x = tf.keras.layers.RandomContrast(0.2)(x)
+        x = tf.keras.layers.RandomTranslation(0.1, 0.1)(x)
+        x = tf.keras.layers.RandomZoom(0.1)(x)
 
-        x = Rescaling(1.0/255)(x)
+        # Preprocessing
+        x = tf.keras.applications.efficientnet.preprocess_input(x)
 
         # ------------------------------------------------------------------------------
         #Q6) Transfer Learning Approach
         # ------------------------------------------------------------------------------
-        base_model  = tf.keras.applications.VGG16(
-            include_top = False,
+        base_model = tf.keras.applications.EfficientNetB0(
+            include_top=False,
             weights='imagenet',
-            input_tensor=x)
-        
-        base_model.trainable = True
+            input_tensor=x
+        )
 
-        #Load pretrained model and freeze the weights so they are not modofies during the training
-        for layer in base_model .layers[:-4]:
-            layer.trainable=False
+        # Freeze base
+        for layer in base_model.layers:
+            layer.trainable = False
 
-
-         # ------------------------------------------------------------------------------
+        # ------------------------------------------------------------------------------
         #Q3: Fixing Overfitting 
         # ------------------------------------------------------------------------------
-        x = GlobalAveragePooling2D()(base_model.output)
-        x = Dense(256, activation='relu')(x)
-        x = Dropout(0.4)(x)
-        outputs = Dense(num_classes, activation='softmax')(x)
+        # Head
+        x = base_model.output
+        x = tf.keras.layers.GlobalAveragePooling2D()(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+
+        x = tf.keras.layers.Dense(128, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.3)(x)
+
+        outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
+
+        model = tf.keras.Model(inputs, outputs)
+
+        loss = tf.keras.losses.CategoricalFocalCrossentropy(
+            gamma=1.5,
+            alpha=0.4
+        )
+
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=3e-4),
+            loss=loss,
+            metrics=['accuracy']
+        )
+
+        return model, base_model
 
 
-        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+    model, base_model = build_model()
+    model.summary()
 
-        model.compile(loss='sparse_categorical_crossentropy',
-                    optimizer=Adam(learning_rate= 1e-4),
-                    metrics=['accuracy'])
-    
-        return model
-    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
-    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
-    lr_callback = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=2, min_lr=1e-6) 
+    # -----------------------
+    # CALLBACKS
+    # -----------------------
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(patience=2, factor=0.3)
+    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras", save_best_only=True)
 
-
-    model = build_model()
+    # -----------------------
+    # TRAIN (basic phase 1)
+    # -----------------------
     start_time = time.time()
-        
-        
+
     history = model.fit(
         train_ds,
-        class_weight = class_weight,
         validation_data=val_ds,
         epochs=epochs,
-        callbacks=[earlystop_callback, save_callback, lr_callback]
+        class_weight=class_weight,
+        callbacks=[earlystop_callback, reduce_lr, save_callback]
     )
-        
+
+    # -----------------------
+    # FINE-TUNING
+    # -----------------------
+    for layer in base_model.layers[-100:]:
+        layer.trainable = True
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(3e-5),
+        loss=tf.keras.losses.CategoricalFocalCrossentropy(gamma=1.5, alpha=0.25),
+        metrics=['accuracy']
+    )
+
+    print("\nFine-tuning...")
+
+    history_fine = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=10, #10
+        class_weight=class_weight,
+        callbacks=[earlystop_callback, reduce_lr]
+    )
+
     end_time = time.time()
     elapsed = end_time - start_time
     print(f'\nTraining time: {elapsed:.1f}s  ({elapsed/60:.1f} minutes)')
@@ -178,11 +192,12 @@ with tf.device('/gpu:0'):
     #Q7) The per class precision, recall and F1 scores
     # ------------------------------------------------------------------------------
     #https://scikit-learn.org/stable/modules/generated/sklearn.metrics.classification_report.html
-    y_true, y_pred =[], []
+    y_true, y_pred = [], []
+
     for images, labels in test_ds:
         preds = model.predict(images)
-        y_pred.extend(np.argmax(preds, axis=1))  #converted probabities to class indices
-        y_true.extend(labels.numpy())
+        y_pred.extend(np.argmax(preds, axis=1))   #converted probabities to class indices
+        y_true.extend(np.argmax(labels.numpy(), axis=1))
 
     print(classification_report(y_true, y_pred, target_names=class_names))
 
@@ -190,8 +205,7 @@ with tf.device('/gpu:0'):
     # Q9) tf-explain (e.g.GradCam) to see what the CNN is seeing
     # ------------------------------------------------------------------------------
     # https://deepwiki.com/sicara/tf-explain/4.1.1-gradcam
-    print("\nRunning Grad-CAM")
-
+    print("\nRunning Grad-CAM...")
     explainer = GradCAM()
 
     for images, labels in test_ds.take(1):
@@ -202,7 +216,7 @@ with tf.device('/gpu:0'):
         prediction = model.predict(np.expand_dims(image, axis=0))
         pred_class = np.argmax(prediction)
 
-        #LOOP THROUGH ALL CLASSES (THIS IS THE KEY CHANGE)
+        #LOOP THROUGH ALL CLASSES
         for i, class_name in enumerate(class_names):
 
             data = (np.expand_dims(image, axis=0), None)
@@ -211,7 +225,7 @@ with tf.device('/gpu:0'):
                 data,
                 model,
                 class_index=i, 
-                layer_name="block5_conv3"
+                layer_name="top_activation"
             )
 
             # CLEAN VISUALIZATION
@@ -222,23 +236,30 @@ with tf.device('/gpu:0'):
             plt.axis("off")
             plt.show()
 
-        break
 
+    #Plot Graph +Accuracy
+    acc = history.history['accuracy'] + history_fine.history['accuracy']
+    val_acc = history.history['val_accuracy'] + history_fine.history['val_accuracy']
 
-    plt.plot(history.history['accuracy'])
-    plt.plot(history.history['val_accuracy'])
-    plt.title('model accuracy')
-    plt.ylabel('accuracy')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'val'], loc='upper left')
-        
+    plt.figure()
+    plt.plot(acc)
+    plt.plot(val_acc)
+    plt.title('Model Accuracy')
+    plt.ylabel('Accuracy')
+    plt.xlabel('Epoch')
+    plt.legend(['train', 'Val'], loc='upper left')
+    plt.show()
+
     test_batch = test_ds.take(1)
     plt.figure(figsize=(10, 10))
     for images, labels in test_batch:
         for i in range(6):
             ax = plt.subplot(2, 3, i + 1)
-            plt.imshow(images[i].numpy().astype("uint8"))
-            prediction = model.predict(tf.expand_dims(images[i].numpy(),0))#perform a prediction on this image
-            plt.title('Actual:' + class_names[labels[i].numpy()]+ '\nPredicted:{} {:.2f}%'.format(class_names[np.argmax(prediction)], 100 * np.max(prediction)))
+            img = images[i].numpy().astype("uint8")
+            plt.imshow(img)
+            prediction = model.predict(tf.expand_dims(img, 0), verbose=0)
+            true_label = np.argmax(labels[i].numpy())
+            pred_label = np.argmax(prediction)
+            plt.title(f"Actual: {class_names[true_label]}\n" f"Predicted: {class_names[pred_label]} ({100 * np.max(prediction):.2f}%)")
             plt.axis("off")
     plt.show()
