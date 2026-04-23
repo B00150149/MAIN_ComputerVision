@@ -7,11 +7,13 @@ import tensorflow as tf
 from keras.datasets import mnist
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D, Rescaling, BatchNormalization, GlobalAveragePooling2D
+from keras.layers import RandomFlip, RandomRotation, RandomZoom, RandomContrast
 from keras.optimizers import RMSprop,Adam
 import matplotlib.pyplot as plt
 import numpy as np
 import time
 import os
+
 
 batch_size = 12
 num_classes = 3
@@ -48,7 +50,7 @@ with tf.device('/gpu:0'):
     print('Class Names: ',class_names)
 
     
-
+    #Q2: Class Weight Distributin
     def count_images(folder):
         counts = {}
         for cls in os.listdir(folder):
@@ -72,6 +74,7 @@ with tf.device('/gpu:0'):
             plt.axis("off")
     plt.show()
 
+    #Q2 CLASS WEIGHTS after
     labels = []
 
     for _, y in train_ds.unbatch():
@@ -87,6 +90,12 @@ with tf.device('/gpu:0'):
 
     #create model
     model = tf.keras.models.Sequential([
+        #Q4 DATA AUGMENTATAION
+        RandomFlip("horizontal"),
+        RandomRotation(0.1),
+        RandomZoom(0.1),
+        # RandomContrast(0.1),
+
         Rescaling(1.0/255),
         Conv2D(16, (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
         MaxPooling2D(2,2),
@@ -98,7 +107,6 @@ with tf.device('/gpu:0'):
         GlobalAveragePooling2D(),
         Dense(128, activation = 'relu'),
         Dropout(0.4),
-        Flatten(), # fl
         Dense(num_classes, activation = 'softmax')
     ])
 
